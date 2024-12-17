@@ -45,10 +45,15 @@ async def connect_to_wss(proxy_url, user_id):
             if proxy_url.startswith("socks"):
                 proxy = Proxy.from_url(proxy_url)
                 async with proxy_connect(random.choice(urilist), proxy=proxy, ssl=ssl_context, server_hostname=server_hostname, extra_headers=custom_headers) as websocket:
-                    # ... (rest of SOCKS code)
-                    logger.info(f"Connected to {random.choice(urilist)} using {proxy_url} (SOCKS)") # More specific logging
+                    logger.info(f"Connected to {random.choice(urilist)} using {proxy_url} (SOCKS)")
                     asyncio.create_task(send_ping(websocket))
-                    # ... (Message handling code - SAME AS HTTP BLOCK BELOW)
+                    async for response in websocket:  # Corrected indentation
+                        try:
+                            message = json.loads(response)
+                            # ... (message handling code - SAME AS HTTP/HTTPS BLOCK)
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Invalid JSON received: {response}, Error: {e}")
+                            break
 
             elif proxy_url.startswith("http"):  # HTTP/HTTPS proxy
                 async with ClientSession(connector=TCPConnector(ssl=False)) as session:
@@ -58,22 +63,48 @@ async def connect_to_wss(proxy_url, user_id):
                         ssl=ssl_context,
                         headers=custom_headers
                     ) as websocket:
-                        logger.info(f"Connected to {random.choice(urilist)} using {proxy_url} (HTTP/HTTPS)") # More specific logging
+                        logger.info(f"Connected to {random.choice(urilist)} using {proxy_url} (HTTP/HTTPS)")
                         asyncio.create_task(send_ping(websocket))
                         async for response in websocket:
                             try:
                                 message = json.loads(response)
                                 logger.info(f"Received message: {message}")
                                 now = datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')
-
                                 if message.get("action") == "AUTH":
-                                    auth_response = { # ... (auth_response code) }
+                                    auth_response = {
+                                        "id": message["id"],
+                                        "origin_action": "AUTH",
+                                        "result": {
+                                            "browser_id": device_id,
+                                            "user_id": user_id,
+                                            "user_agent": custom_headers['User-Agent'],
+                                            "timestamp": int(time.time()),
+                                            "device_type": "desktop",
+                                            "version": "4.29.0",
+                                        }
+                                    }
                                     await send_websocket_message(websocket, auth_response)
                                 elif message.get("action") == "HTTP_REQUEST":
-                                    httpreq_response = { # ... (httpreq_response code) }
+                                    httpreq_response = {
+                                        "id": message["id"],
+                                        "origin_action": "HTTP_REQUEST",
+                                        "result": {
+                                            "url": message["url"],
+                                            "status": 200,
+                                            "status_text": "OK",
+                                            "headers": {
+                                                "content-type": "application/json; charset=utf-8",
+                                                "date": now,
+                                                "keep-alive": "timeout=5",
+                                                "proxy-connection": "keep-alive",
+                                                "x-powered-by": "Express",
+                                            }
+                                        }
+                                    }
                                     await send_websocket_message(websocket, httpreq_response)
                                 elif message.get("action") == "PONG":
-                                    pong_response = { # ... (pong_response code) }
+                                    pong_response = {"id": message["id"], "origin_action": "PONG"}
+                                    logger.debug(pong_response)
                                     await send_websocket_message(websocket, pong_response)
                                 else:
                                     logger.warning(f"Unexpected message: {message}.")
@@ -83,18 +114,16 @@ async def connect_to_wss(proxy_url, user_id):
 
             else:
                 logger.error(f"Unsupported proxy type: {proxy_url}")
-                return # Or continue to the next proxy - depends on your needs
+                return
 
         except Exception as e:
             logger.error(f"Error with proxy {proxy_url}: {e}")
             await asyncio.sleep(random.uniform(1, 5))
 
-
 def remove_proxy(proxy):
     if proxy in active_proxies:
         active_proxies.remove(proxy)
         logger.info(f"Proxy {proxy} removed. Active proxies: {len(active_proxies)}")
-
 
 async def main():
     _user_id = '2owgypvuaDXDxUN3gDdVcCwbxYj'  # Replace with your user ID
